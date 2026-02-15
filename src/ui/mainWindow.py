@@ -138,7 +138,11 @@ class MainWindow(QMainWindow):
         # Initialize the Current Downloads dialog once (persists for the app session)
         self.current_downloads_dialog = None
 
-        if not self.is_config_valid():
+        if not self.is_config_valid() or self.download_dir_setup_error:
+            if self.download_dir_setup_error:
+                QMessageBox.warning(self, "Download Directory Error",
+                                    f"The download directory is invalid or inaccessible:\n{self.download_dir_setup_error}\n\nPlease select a new location in Settings.")
+
             self.open_settings()
 
         self.init_internet_status_check()  # Initialize internet status check
@@ -185,16 +189,28 @@ class MainWindow(QMainWindow):
         self.unzip_songs = config.getboolean("Settings", "unzip_songs", fallback=False)
         self.delete_zip_after_extraction = config.getboolean("Settings", "delete_zip_after_extraction", fallback=False)
         self.polling_time = config.getint("Settings", "polling_time", fallback=300)
-        self.setup_download_directory()
+        self.download_dir_setup_error = self.setup_download_directory()
         logger.debug("load_configurations: Configurations loaded.")
 
     def setup_download_directory(self):
         logger.debug("setup_download_directory: Setting up download directory...")
         if not self.download_dir:
             self.download_dir = os.path.join(os.path.expanduser("~"), "VibeKaraokeDownloads")
-        if not os.path.exists(self.download_dir):
-            os.makedirs(self.download_dir)
+
+        try:
+            if not os.path.exists(self.download_dir):
+                os.makedirs(self.download_dir)
+
+            # Verify the directory is writable
+            if not os.access(self.download_dir, os.W_OK):
+                return f"Directory is not writable: {self.download_dir}"
+
+        except OSError as e:
+            logger.error(f"setup_download_directory: Failed to create/access directory: {e}")
+            return str(e)  # Return the exception message
+
         logger.debug(f"setup_download_directory: Download directory set to: {self.download_dir}")
+        return None  # Return None on success
 
     def init_toolbar(self):
         logger.debug("init_toolbar: Initializing toolbar...")
@@ -223,8 +239,15 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self.open_settings)
         toolbar.addAction(settings_action)
 
+        # Operation Logs
+        operation_logs_button = QIcon(os.path.join("resources", "buttons", "logs.png"))
+        operation_logs_action = QAction(operation_logs_button, "Logs", self)
+        operation_logs_action.triggered.connect(self.view_logs)
+        toolbar.addAction(operation_logs_action)
+        logger.debug("init_bottom_toolbar: Bottom toolbar initialized.")
+
         # Minimize to tray
-        minimize_action = QAction(QIcon("resources/buttons/minimize.png"), "Minimize to Tray", self)
+        minimize_action = QAction(QIcon("resources/buttons/minimize.png"), "Minimize", self)
         minimize_action.triggered.connect(self.minimize_to_tray)
         toolbar.addAction(minimize_action)
 
@@ -261,18 +284,11 @@ class MainWindow(QMainWindow):
         spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer2)
 
-        # Current Downloads (new button to the left of View Logs)
+        # Active Downloads
         current_downloads_icon = QIcon(os.path.join("resources", "buttons", "cloud_sync.png"))
-        current_downloads_action = QAction(current_downloads_icon, "Current Downloads", self)
+        current_downloads_action = QAction(current_downloads_icon, "Active Downloads", self)
         current_downloads_action.triggered.connect(self.view_current_downloads)
         toolbar.addAction(current_downloads_action)
-
-        # Operation Logs (Bottom Toolbar, Right-aligned)
-        operation_logs_button = QIcon(os.path.join("resources", "buttons", "logs.png"))
-        operation_logs_action = QAction(operation_logs_button, "View Logs", self)
-        operation_logs_action.triggered.connect(self.view_logs)
-        toolbar.addAction(operation_logs_action)
-        logger.debug("init_bottom_toolbar: Bottom toolbar initialized.")
 
         # Quit (Bottom Toolbar)
         quit_icon_bottom = QIcon(
@@ -290,6 +306,11 @@ class MainWindow(QMainWindow):
         self.status_progress.setMaximumWidth(300)
         self.status_progress.setVisible(False)
         self.status_bar.addPermanentWidget(self.status_progress, 1)
+
+        # Spacer
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.status_bar.addWidget(spacer)
 
         self.status_label = QLabel("Idle", self)
         self.status_bar.addPermanentWidget(self.status_label, 1)
@@ -749,13 +770,13 @@ class MainWindow(QMainWindow):
     def download_finished(self, log_id):
         logger.debug("download_finished: Download thread finished.")
         if self.download_thread and getattr(self.download_thread, 'stop_downloading_flag', False):
-            self.db_manager.update_log_operation(log_id, "cancelled", "Download process was cancelled by the user.")
-            self.end_operation("Downloads cancelled by user.")
+            self.db_manager.update_log_operation(log_id, "cancelled", "Operation was cancelled by the user.")
+            self.end_operation("Operation Terminated")
             return
 
         downloaded_count = self.db_manager.get_newly_downloaded_song_count()  # Get count of newly downloaded songs
         self.db_manager.update_log_operation(log_id, "success",
-                                             f"Downloads completed. {downloaded_count} songs downloaded.")
+                                             f"Operation completed. {downloaded_count} songs downloaded.")
         self.refresh_table_with_sort()
         self.update_record_count()
         self.end_operation()
