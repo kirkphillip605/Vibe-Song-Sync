@@ -19,7 +19,8 @@ from src.core.threads import DownloadThread, ScrapeThread
 from src.core.date_utils import format_date_for_display
 from src.ui.settingsDialog import SettingsDialog
 from src.ui.currentDownloadsDialog import CurrentDownloadsDialog
-
+# Import the new dialog (Use try/except in case dependency is missing during dev)
+from src.ui.songShopDialog import SongShopDialog
 
 logger = logging.getLogger('vibe_manager')  # Use the main logger
 
@@ -229,15 +230,25 @@ class MainWindow(QMainWindow):
         full_sync_action.triggered.connect(self.full_sync)
         toolbar.addAction(full_sync_action)
 
+        # Song Shop (New Button)
+        buy_icon_path = "resources/buttons/buy.png"
+        # Fallback icon if buy.png doesn't exist yet, using music.svg or similar
+        if not os.path.exists(buy_icon_path):
+            buy_icon_path = "resources/buttons/music.svg"
+
+        song_shop_action = QAction(QIcon(buy_icon_path), "Song Shop", self)
+        song_shop_action.triggered.connect(self.open_song_shop)
+        toolbar.addAction(song_shop_action)
+
         # Spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        # Settings
-        settings_action = QAction(QIcon("resources/buttons/settings.svg"), "Settings", self)
-        settings_action.triggered.connect(self.open_settings)
-        toolbar.addAction(settings_action)
+        # Minimize to tray
+        minimize_action = QAction(QIcon("resources/buttons/minimize.png"), "Minimize", self)
+        minimize_action.triggered.connect(self.minimize_to_tray)
+        toolbar.addAction(minimize_action)
 
         # Operation Logs
         operation_logs_button = QIcon(os.path.join("resources", "buttons", "logs.png"))
@@ -246,10 +257,10 @@ class MainWindow(QMainWindow):
         toolbar.addAction(operation_logs_action)
         logger.debug("init_bottom_toolbar: Bottom toolbar initialized.")
 
-        # Minimize to tray
-        minimize_action = QAction(QIcon("resources/buttons/minimize.png"), "Minimize", self)
-        minimize_action.triggered.connect(self.minimize_to_tray)
-        toolbar.addAction(minimize_action)
+        # Settings
+        settings_action = QAction(QIcon("resources/buttons/settings.svg"), "Settings", self)
+        settings_action.triggered.connect(self.open_settings)
+        toolbar.addAction(settings_action)
 
     def init_bottom_toolbar(self):
         logger.debug("init_bottom_toolbar: Initializing bottom toolbar...")
@@ -296,6 +307,43 @@ class MainWindow(QMainWindow):
         quit_action_bottom = QAction(quit_icon_bottom, "Quit", self)
         quit_action_bottom.triggered.connect(self.quit_application)
         toolbar.addAction(quit_action_bottom)
+
+    def open_song_shop(self):
+        """Opens the embedded Song Shop browser."""
+        if SongShopDialog is None:
+            QMessageBox.critical(self, "Missing Dependency",
+                                 "The Song Shop requires 'PyQt6-WebEngine' to be installed.")
+            return
+
+        if not self.check_internet_before_operation():
+            return
+
+        if not self.username or not self.password:
+            QMessageBox.warning(self, "Credentials Missing",
+                                "Please configure your credentials in Settings before accessing the Song Shop.")
+            return
+
+        self.set_status_message("Connecting to Song Shop...")
+
+        # We need to perform a login to get a fresh session with cookies
+        try:
+            session = requests.Session()
+            scraper = SongScraper("https://www.karaoke-version.com", self.username, self.password, session)
+            scraper.login()  # This populates the session cookies
+
+            self.set_status_message("Opening Song Shop...")
+            shop_dialog = SongShopDialog(self, session)
+
+            # Connect the signal from the dialog to the fetch_new method
+            shop_dialog.purchase_detected.connect(lambda: self.fetch_new())
+
+            shop_dialog.exec()
+            self.set_status_message("Idle")
+
+        except Exception as e:
+            logger.error(f"Failed to open Song Shop: {e}")
+            QMessageBox.critical(self, "Connection Error", f"Failed to connect to Song Shop: {e}")
+            self.set_status_message("Error connecting to shop")
 
     def init_status_bar(self):
         logger.debug("init_status_bar: Initializing status bar...")
